@@ -27,7 +27,8 @@ sequence ff_dl (32-bit). Internal state fields `rx_expected_len`, `rx_received_l
 | FF TX escape  | `use_fd && length > 4095` → emit `data[0..1]=0x10 0x00`, bytes 2–5 = 32-bit FF_DL | §9.8.3 | Fixed |
 
 New constants in `transport/isotp.h`:
-- `ISOTP_FD_SF_MAX_PAYLOAD_LEN (62U)` — max SF payload on CAN FD
+- `ISOTP_ENABLE_CAN_FD (0)` — compile-time opt-in; set to 1 to enable FD paths. Default 0: Classic CAN only, no FD code in the binary.
+- `ISOTP_FD_SF_MAX_PAYLOAD_LEN (62U)` — max SF payload on CAN FD (only defined when `ISOTP_ENABLE_CAN_FD=1`)
 - `ISOTP_RX_BUF_LEN` — overridable compile-time RX buffer size (default: `UDS_MAX_PAYLOAD_LEN`)
 
 Added `bool use_fd` to both `isotp_cfg_t` and `isotp_ctx_t`. The Zephyr and FreeRTOS

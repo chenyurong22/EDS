@@ -101,7 +101,9 @@ uds_status_t isotp_init(isotp_ctx_t *ctx, const isotp_cfg_t *cfg)
     ctx->tx_can_id        = cfg->tx_can_id;
     ctx->local_block_size = cfg->block_size;
     ctx->local_stmin_ms   = cfg->stmin_ms;
+#if ISOTP_ENABLE_CAN_FD
     ctx->use_fd           = cfg->use_fd;
+#endif
     ctx->can              = cfg->can;
     ctx->rx_state         = ISOTP_STATE_IDLE;
     ctx->tx_state         = ISOTP_STATE_IDLE;
@@ -141,6 +143,7 @@ uds_status_t isotp_process_rx_frame(
         case (uint8_t)ISOTP_FRAME_TYPE_SF: {
             uint8_t sf_dl;
 
+#if ISOTP_ENABLE_CAN_FD
             /* CAN FD Single Frame: signalled by frame->is_fd and byte 0 == 0x00. */
             if (frame->is_fd && (frame->data[0] == (uint8_t)0x00U)) {
                 sf_dl = frame->data[1];
@@ -161,6 +164,7 @@ uds_status_t isotp_process_rx_frame(
                 rx_cb(ctx->rx_buf, (uint32_t)sf_dl, rx_cb_arg);
                 return UDS_STATUS_OK;
             }
+#endif /* ISOTP_ENABLE_CAN_FD */
 
             /* Classic CAN Single Frame. */
             sf_dl = (uint8_t)(frame->data[0] & (uint8_t)0x0FU);
@@ -210,6 +214,7 @@ uds_status_t isotp_process_rx_frame(
                                | (uint32_t)frame->data[1]);
 
             if (ff_dl == (uint32_t)0U) {
+#if ISOTP_ENABLE_CAN_FD
                 /*
                  * ISO 15765-2 §9.8.2: FF_DL == 0 signals the CAN FD escape
                  * sequence.  Classic CAN never uses this encoding — reject it.
@@ -231,6 +236,10 @@ uds_status_t isotp_process_rx_frame(
                     return UDS_STATUS_ERR_TP_FRAME_INVALID;
                 }
                 ff_data_offset = (uint8_t)6U;
+#else
+                /* FF_DL == 0 is reserved on Classic CAN — always reject. */
+                return UDS_STATUS_ERR_TP_FRAME_INVALID;
+#endif /* ISOTP_ENABLE_CAN_FD */
             } else {
                 /* Standard 12-bit FF_DL (values 1-4095). */
                 ff_data_offset = (uint8_t)2U;
@@ -403,8 +412,12 @@ uds_status_t isotp_transmit(
         return UDS_STATUS_ERR_INVALID_PARAM;
     }
 
-    /* Classic CAN caps at UDS_MAX_PAYLOAD_LEN (4095); CAN FD allows larger. */
+#if ISOTP_ENABLE_CAN_FD
+    /* CAN FD allows payloads > 4095; Classic CAN is capped at UDS_MAX_PAYLOAD_LEN. */
     if (!ctx->use_fd && (length > (uint32_t)UDS_MAX_PAYLOAD_LEN)) {
+#else
+    if (length > (uint32_t)UDS_MAX_PAYLOAD_LEN) {
+#endif
         return UDS_STATUS_ERR_BUFFER_OVERFLOW;
     }
 
@@ -439,6 +452,7 @@ uds_status_t isotp_transmit(
         return UDS_STATUS_OK;
     }
 
+#if ISOTP_ENABLE_CAN_FD
     if (ctx->use_fd && (length <= (uint32_t)ISOTP_FD_SF_MAX_PAYLOAD_LEN)) {
         /* ---- [P2-TP-07] CAN FD Single Frame (payload 8-62 bytes) ----
          * ISO 15765-2 §9.8.1: byte 0 = 0x00, byte 1 = SF_DL, data at [2..].
@@ -462,8 +476,10 @@ uds_status_t isotp_transmit(
         ctx->tx_sent_len = length;
         return UDS_STATUS_OK;
     }
+#endif /* ISOTP_ENABLE_CAN_FD */
 
     /* ---- Multi-Frame: send First Frame ---- */
+#if ISOTP_ENABLE_CAN_FD
     if (ctx->use_fd && (length > (uint32_t)UDS_MAX_PAYLOAD_LEN)) {
         /* ---- [P2-TP-07] CAN FD FF escape sequence (payload > 4095 bytes) ----
          * ISO 15765-2 §9.8.2: bytes 0-1 = 0x10 0x00, bytes 2-5 = 32-bit FF_DL.
@@ -497,7 +513,9 @@ uds_status_t isotp_transmit(
         ctx->tx_bs_timer_ms = (uint32_t)ISOTP_TIMEOUT_BS_MS;
         ctx->tx_as_timer_ms = (uint32_t)ISOTP_TIMEOUT_AS_MS;
         ctx->tx_state       = ISOTP_STATE_TX_WAIT_FC;
-    } else {
+    } else
+#endif /* ISOTP_ENABLE_CAN_FD */
+    {
         /* ---- Classic CAN FF (12-bit FF_DL, payload 8-4095 bytes) ---- */
         uds_can_frame_t ff;
         uds_status_t    tx_rc;

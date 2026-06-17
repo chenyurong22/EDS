@@ -131,6 +131,7 @@ static uds_can_frame_t make_can_frame(uint32_t id, const uint8_t *data, uint8_t 
     return f;
 }
 
+#if ISOTP_ENABLE_CAN_FD
 /** Build a CAN FD frame (helper). */
 static uds_can_frame_t make_fd_frame(uint32_t id, const uint8_t *data, uint8_t dlc)
 {
@@ -138,6 +139,7 @@ static uds_can_frame_t make_fd_frame(uint32_t id, const uint8_t *data, uint8_t d
     f.is_fd = true;
     return f;
 }
+#endif /* ISOTP_ENABLE_CAN_FD */
 
 /** Initialise a fresh isotp_ctx_t with the mock CAN transport (Classic CAN). */
 static uds_status_t init_isotp(isotp_ctx_t *ctx)
@@ -148,11 +150,14 @@ static uds_status_t init_isotp(isotp_ctx_t *ctx)
     cfg.tx_can_id   = 0x7E8U;
     cfg.block_size  = 0U;
     cfg.stmin_ms    = 0U;
+#if ISOTP_ENABLE_CAN_FD
     cfg.use_fd      = false;
+#endif
     cfg.can         = &g_mock_can;
     return isotp_init(ctx, &cfg);
 }
 
+#if ISOTP_ENABLE_CAN_FD
 /** Initialise a fresh isotp_ctx_t in CAN FD mode. */
 static uds_status_t init_isotp_fd(isotp_ctx_t *ctx)
 {
@@ -166,6 +171,7 @@ static uds_status_t init_isotp_fd(isotp_ctx_t *ctx)
     cfg.can         = &g_mock_can;
     return isotp_init(ctx, &cfg);
 }
+#endif /* ISOTP_ENABLE_CAN_FD */
 
 /* =========================================================================
  * Test suite: isotp_init
@@ -445,6 +451,7 @@ ZTEST(test_isotp_rx_multi, test_cf_without_ff)
     zassert_false(g_rx_cb_called, "Callback must not fire for unexpected CF");
 }
 
+#if ISOTP_ENABLE_CAN_FD
 /**
  * TC-ISTP-RX-MF-004: CAN FD FF escape sequence with FF_DL > ISOTP_RX_BUF_LEN
  *                     → UDS_STATUS_ERR_TP_OVERFLOW + FC OVFLW transmitted.
@@ -476,10 +483,13 @@ ZTEST(test_isotp_rx_multi, test_ff_overflow)
     zassert_equal((g_mock_tx_frames[0].data[0] & 0x0FU), (uint8_t)ISOTP_FC_STATUS_OVERFLOW,
                   "FC status must be OVERFLOW");
 }
+#endif /* ISOTP_ENABLE_CAN_FD — test_ff_overflow */
 
 /* =========================================================================
  * Test suite: CAN FD SF and FF (ISO 15765-2 §9.8)
  * ========================================================================= */
+
+#if ISOTP_ENABLE_CAN_FD
 
 ZTEST_SUITE(test_isotp_canfd, NULL, NULL, NULL, NULL, NULL);
 
@@ -696,6 +706,7 @@ ZTEST(test_isotp_canfd, test_fd_ff_escape_tx)
     zassert_equal(state, ISOTP_STATE_TX_WAIT_FC,
                   "State must be TX_WAIT_FC after FD FF escape TX");
 }
+#endif /* ISOTP_ENABLE_CAN_FD — test_isotp_canfd suite */
 
 /* =========================================================================
  * Test suite: isotp_transmit
@@ -994,6 +1005,7 @@ extern void test_isotp_rx_single__test_sf_seven_bytes(void);
 extern void test_isotp_rx_multi__test_first_frame_triggers_fc(void);
 extern void test_isotp_rx_multi__test_ff_cf_complete(void);
 extern void test_isotp_rx_multi__test_cf_without_ff(void);
+#if ISOTP_ENABLE_CAN_FD
 extern void test_isotp_rx_multi__test_ff_overflow(void);
 extern void test_isotp_canfd__test_fd_sf_rx_10_bytes(void);
 extern void test_isotp_canfd__test_fd_sf_rx_62_bytes(void);
@@ -1003,6 +1015,7 @@ extern void test_isotp_canfd__test_fd_ff_escape_rx_fits(void);
 extern void test_isotp_canfd__test_fd_ff_escape_rx_overflow(void);
 extern void test_isotp_canfd__test_fd_ff_escape_classic_can_rejected(void);
 extern void test_isotp_canfd__test_fd_ff_escape_tx(void);
+#endif /* ISOTP_ENABLE_CAN_FD */
 extern void test_isotp_transmit__test_null_ctx(void);
 extern void test_isotp_transmit__test_null_data(void);
 extern void test_isotp_transmit__test_zero_length(void);
@@ -1033,6 +1046,7 @@ void run_all_tests(void)
     RUN_TEST(test_isotp_rx_multi__test_first_frame_triggers_fc);
     RUN_TEST(test_isotp_rx_multi__test_ff_cf_complete);
     RUN_TEST(test_isotp_rx_multi__test_cf_without_ff);
+#if ISOTP_ENABLE_CAN_FD
     RUN_TEST(test_isotp_rx_multi__test_ff_overflow);
     RUN_TEST(test_isotp_canfd__test_fd_sf_rx_10_bytes);
     RUN_TEST(test_isotp_canfd__test_fd_sf_rx_62_bytes);
@@ -1042,6 +1056,7 @@ void run_all_tests(void)
     RUN_TEST(test_isotp_canfd__test_fd_ff_escape_rx_overflow);
     RUN_TEST(test_isotp_canfd__test_fd_ff_escape_classic_can_rejected);
     RUN_TEST(test_isotp_canfd__test_fd_ff_escape_tx);
+#endif /* ISOTP_ENABLE_CAN_FD */
     RUN_TEST(test_isotp_transmit__test_null_ctx);
     RUN_TEST(test_isotp_transmit__test_null_data);
     RUN_TEST(test_isotp_transmit__test_zero_length);

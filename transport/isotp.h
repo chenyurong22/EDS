@@ -68,6 +68,22 @@ extern "C" {
 #endif
 
 /**
+ * Compile-time CAN FD opt-in.
+ * Set to 1 (e.g. -DISOTP_ENABLE_CAN_FD=1) to enable the ISO 15765-2 §9.8
+ * SF/FF escape paths.  Default 0 — Classic CAN only, FD code is compiled out
+ * entirely so the binary contains no FD logic.
+ *
+ * The runtime use_fd flag in isotp_cfg_t / isotp_ctx_t is only present when
+ * this macro is 1.  Both layers are required to enable CAN FD:
+ *   - compile time: -DISOTP_ENABLE_CAN_FD=1
+ *   - run time: isotp_cfg_t.use_fd = true
+ */
+#ifndef ISOTP_ENABLE_CAN_FD
+#define ISOTP_ENABLE_CAN_FD 0
+#endif
+
+#if ISOTP_ENABLE_CAN_FD
+/**
  * Maximum payload bytes in a CAN FD Single Frame.
  * ISO 15765-2:2016 §9.8.1: CAN FD frame = up to 64 bytes;
  * 2 bytes consumed by the escape PCI (0x00 + SF_DL), leaving 62 bytes.
@@ -75,6 +91,7 @@ extern "C" {
 #ifndef ISOTP_FD_SF_MAX_PAYLOAD_LEN
 #define ISOTP_FD_SF_MAX_PAYLOAD_LEN (62U)
 #endif
+#endif /* ISOTP_ENABLE_CAN_FD */
 
 /**
  * Static RX reassembly buffer size in bytes.
@@ -160,7 +177,9 @@ typedef struct isotp_ctx {
     uint32_t         tx_can_id;                         /**< CAN ID to transmit on. */
     uint8_t          local_block_size;                  /**< Block size to advertise in FC. */
     uint8_t          local_stmin_ms;                    /**< STmin to advertise in FC (ms). */
+#if ISOTP_ENABLE_CAN_FD
     bool             use_fd;                            /**< True: CAN FD mode (SF up to 62 B, FF escape for >4095 B). */
+#endif
 
     /* Bound CAN transport interface. */
     can_transport_t *can;                               /**< Pointer to CAN transport interface. */
@@ -178,7 +197,9 @@ typedef struct isotp_cfg {
     uint32_t         tx_can_id;         /**< CAN ID to use for outgoing frames. */
     uint8_t          block_size;        /**< Block size to advertise to sender (0 = unlimited). */
     uint8_t          stmin_ms;          /**< Minimum separation time to advertise (ms). */
+#if ISOTP_ENABLE_CAN_FD
     bool             use_fd;            /**< Set true to enable CAN FD SF/FF encoding. */
+#endif
     can_transport_t *can;               /**< Pointer to initialized CAN transport interface. */
 } isotp_cfg_t;
 
@@ -261,7 +282,8 @@ uds_status_t isotp_process_rx_frame(
  * @return UDS_STATUS_ERR_NOT_INITIALIZED if ctx not initialized.
  * @return UDS_STATUS_ERR_BUSY if a TX is already in progress.
  * @return UDS_STATUS_ERR_INVALID_PARAM if length is zero.
- * @return UDS_STATUS_ERR_BUFFER_OVERFLOW if length exceeds UDS_MAX_PAYLOAD_LEN and use_fd is false.
+ * @return UDS_STATUS_ERR_BUFFER_OVERFLOW if length exceeds UDS_MAX_PAYLOAD_LEN
+ *         (when ISOTP_ENABLE_CAN_FD=0, always; when =1, only if use_fd is false).
  *
  * @note TIMING: Timing-critical — TX initiation must occur within P2server_max.
  */
