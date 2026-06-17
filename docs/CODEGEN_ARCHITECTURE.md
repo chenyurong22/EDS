@@ -1,0 +1,604 @@
+# Code Generation Architecture
+
+## Xaloqi EDS — Zephyr RTOS and FreeRTOS
+
+| Field | Value |
+|---|---|
+| Generator | `tools/codegen.py` |
+| Template engine | Jinja2 |
+| Configuration format | YAML (`diagnostics_config.yaml`) |
+| Output languages | C (embedded stack), TypeScript (GUI catalog), Python (pytest suite) |
+| Last updated | 2026-05-13 (v1.6.0 — transport context, DoIP guards) |
+
+---
+
+## Contents
+
+1. [Overview](#1-overview)
+2. [Design Goals](#2-design-goals)
+3. [Pipeline](#3-pipeline)
+4. [Generator Components](#4-generator-components)
+5. [Configuration Format](#5-configuration-format)
+6. [Template Catalogue](#6-template-catalogue)
+7. [Generated C Files](#7-generated-c-files)
+8. [Generated Test Files](#8-generated-test-files)
+9. [Generated GUI Catalog](#9-generated-gui-catalog)
+10. [CLI Reference](#10-cli-reference)
+11. [Build System Integration](#11-build-system-integration)
+12. [Validation and Error Handling](#12-validation-and-error-handling)
+13. [Regeneration Workflow](#13-regeneration-workflow)
+14. [Generated Code Constraints](#14-generated-code-constraints)
+
+---
+
+## 1. Overview
+
+The Xaloqi EDS uses a configuration-driven architecture where all diagnostic behaviour is defined in a single YAML file and automatically transformed into production C code, a pytest test suite, and a TypeScript GUI catalog.
+
+This approach delivers several compounding advantages:
+
+- **No manual boilerplate** — every DID, DTC, and routine produces handlers, wrappers, tests, and GUI entries automatically
+- **Consistent safety enforcement** — no DID can be added without a corresponding ASIL-B safety wrapper
+- **Single source of truth** — changing a DID's session or security requirement in YAML propagates to C, tests, and dashboard in one codegen run
+- **Scalability** — the ARDEP example configures 35 DIDs and produces 42 test files from a single 200-line YAML; without codegen this would require days of manual work
+- **Transport-agnostic** — the same YAML and templates produce CAN/ISO-TP builds or DoIP/Ethernet builds; the transport is a one-field YAML choice, not a code branch (v1.6.0)
+
+---
+
+## 2. Design Goals
+
+### Deterministic Output
+
+Generated code is fully deterministic: the same YAML always produces byte-identical output. This is essential for reproducible CI builds and for diff-based code review.
+
+### Safety Integration
+
+The generator automatically wraps every DID with the ASIL-B 5-step validation chain. It enforces ASIL-B constraints at generation time:
+
+- Write-capable DIDs must declare `write_security_level > 0`
+- DID data length must not exceed `ASIL_B_MAX_DID_DATA_LEN` (64 bytes)
+- Duplicate DID IDs are a fatal validation error
+- `GEN_SAFETY_DID_COUNT` in `safety_config.h` must equal `GEN_DID_COUNT` — validated by CI
+
+### Minimal Runtime Overhead
+
+All configuration decisions are made at generation time. Generated C code contains only static tables, direct function mappings, and no dynamic allocation. Runtime code paths are shorter because the generator has already resolved session and security requirements into direct comparisons.
+
+### Human-Readable Output
+
+Generated files are intentionally readable and well-commented. A developer can open `generated/did_safety_wrappers.c` and immediately understand what each wrapper does and which YAML entry produced it. This matters during code review and safety audits.
+
+---
+
+## 3. Pipeline
+
+```
+diagnostics_config.yaml
+         │
+         ▼
+  tools/codegen.py
+         │
+         ├─── config_parser.py        Load + normalise YAML
+         │
+         ├─── Validation Layer        Schema, ASIL-B constraints,
+         │                            duplicate IDs, security rules
+         │
+         ├─── Jinja2 Templates ───── tools/templates/*.j2
+         │
+         ├─── C Sources ──────────── generated/*.c / *.h
+         │
+         ├─── Test Suite ─────────── generated/tests/*.py
+         │                           (--test-gen flag)
+         │
+         ├─── GUI Catalog ─────────── gui/src/generated/catalog.ts
+         │                           (--gui-types flag)
+         │
+         └─── SOVD CDA ───────────── generated/sovd_cda.json
+                                      (--sovd flag, pure Python — no template)
+```
+
+---
+
+## 4. Generator Components
+
+### Configuration Parser (`tools/config_parser.py`)
+
+Loads the YAML file and normalises the structure into typed Python objects consumed by all downstream stages. Handles:
+
+- Default value injection (timing parameters, CAN IDs, session defaults, transport defaults)
+- Hex string normalisation (`0xF190` → `"0xF190"`, integer representations)
+- C identifier generation from symbolic names (spaces → underscores, reserved word avoidance)
+
+### Code Generator (`tools/codegen.py`)
+
+The main orchestrator. Responsibilities:
+
+1. Call `config_parser.py` to load the YAML
+2. Run the validation layer (schema + ASIL-B constraints)
+3. Build enriched data structures for each template
+4. Render all Jinja2 templates in order
+5. Write output files (only overwriting if content changed, for incremental builds)
+6. Optionally call the test generator and GUI catalog generator
+
+### Test Generator (`tools/testgen.py`)
+
+Produces the pytest test suite when `--test-gen` is active. One test file per DID, one per routine, plus service-level and firmware harness test files. The generated tests cover:
+
+- Happy-path read and write
+- Session gate (NRC 0x7F for wrong session)
+- Security gate (NRC 0x33 for insufficient security level)
+- Data length mismatch (NRC 0x13)
+- Invalid DID (NRC 0x31)
+- RoutineControl: start, stop (if supported), requestResults (if supported), session gate, security gate
+
+### Template System (`tools/templates/`)
+
+14 Jinja2 templates produce all generated output. Templates have access to the full enriched configuration object and use Jinja2 filters, loops, and conditionals to produce well-structured, commented C and Python output.
+
+---
+
+## 5. Configuration Format
+
+A complete `diagnostics_config.yaml` structure:
+
+```yaml
+metadata:
+  ecu_name:   "BasicECU"
+  version:    "1.1.0"
+
+# Optional transport selection (v1.6.0) — default is "can"
+# "can"  — ISO-TP over CAN (default, backward compatible)
+# "doip" — DoIP over Ethernet/TCP (ISO 13400-2), disables ISO-TP init
+# "both" — ISO-TP CAN + DoIP simultaneously (zonal ECU)
+ecu:
+  transport: doip
+  doip:
+    logical_address: "0xE400"   # This ECU's DoIP logical address
+    source_address:  "0x0E00"   # Expected tester source address
+    port:            13400       # Standard DoIP TCP port
+
+can:
+  rx_can_id:  "0x7DF"    # ISO 15765-4 functional address
+  tx_can_id:  "0x7E8"    # ECU physical response address
+
+timing:
+  p2_server_max_ms:      25
+  p2_star_server_max_ms: 5000
+  s3_server_timeout_ms:  5000
+
+# Optional — SafeBoot MCUboot DFU integration (Xaloqi EDS Professional)
+safeboot:
+  enabled: true
+  platform: zephyr
+  max_block_length: 256
+
+dids:
+  - id:                  "0xF190"
+    name:                "VehicleIdentificationNumber"
+    data_length:         17
+    data_type:           ascii
+    min_session:         extended
+    read_security_level: 0
+    access:              [read]
+
+dtcs:
+  - code:        "0xC00100"
+    name:        "OvervoltageFault"
+    description: "Pack voltage exceeded OV threshold"
+
+routines:
+  - id:            "0xFF00"
+    name:          "ECU_SelfTest"
+    min_session:   extended
+    security_level: 0
+    support:       ["start", "results"]
+```
+
+### Context variables passed to `uds_init.c.j2` and `uds_init.h.j2`
+
+`build_uds_init_context()` in `codegen.py` builds the following variables:
+
+| Variable | Type | Source | Notes |
+|---|---|---|---|
+| `ecu_name` | str | `metadata.ecu_name` | |
+| `version` | str | `metadata.version` | |
+| `p2_server_max_ms` | int | `timing.p2_server_max_ms` | |
+| `p2_star_server_max_ms` | int | `timing.p2_star_server_max_ms` | |
+| `s3_server_timeout_ms` | int | `timing.s3_server_timeout_ms` | |
+| `can_rx_id` | int | `can.rx_can_id` (default `0x7DF`) | |
+| `can_tx_id` | int | `can.tx_can_id` (default `0x7E8`) | |
+| `dids` | list | `_build_did_list(cfg)` | |
+| `dtcs` | list | `_build_dtc_list(cfg)` | |
+| `routines` | list | `_build_routine_list(cfg)` | |
+| `safeboot_enabled` | bool | `safeboot.enabled` (default `False`) | |
+| `safeboot_platform` | str | `safeboot.platform` (default `"zephyr"`) | |
+| `safeboot_max_block` | int | `safeboot.max_block_length` (default `256`) | |
+| `transport` | str | `ecu.transport` (default `"can"`) | v1.6.0 — `"can"`, `"doip"`, or `"both"` |
+| `is_doip` | bool | `transport in ("doip", "both")` | v1.6.0 — available to templates |
+| `doip_logical_address` | str | `ecu.doip.logical_address` (default `"0xE400"`) | v1.6.0 |
+| `doip_source_address` | str | `ecu.doip.source_address` (default `"0x0E00"`) | v1.6.0 |
+| `doip_port` | int | `ecu.doip.port` (default `13400`) | v1.6.0 |
+
+---
+
+## 6. Template Catalogue
+
+All 14 templates in `tools/templates/`:
+
+Note: the SOVD CDA output (`--sovd`) is generated directly by `build_sovd_cda()` in
+`codegen.py` — it uses no Jinja2 template. `json.dumps(indent=2)` is used instead to
+avoid JSON-escaping issues.
+
+| Template | Output file | Description |
+|---|---|---|
+| `did_handlers.c.j2` | `did_handlers.c` | DID callback stub implementations |
+| `did_handlers.h.j2` | `did_handlers.h` | DID callback prototypes |
+| `did_safety_wrappers.c.j2` | `did_safety_wrappers.c` | ASIL-B 5-step wrapper implementations |
+| `did_safety_wrappers.h.j2` | `did_safety_wrappers.h` | Wrapper prototypes |
+| `uds_init.c.j2` | `uds_init.c` | Full stack init sequence — CAN and DoIP build guards (v1.6.0) |
+| `uds_init.h.j2` | `uds_init.h` | `uds_generated_init()` prototype — CAN and DoIP variants (v1.6.0) |
+| `generated_config.h.j2` | `generated_config.h` | CAN IDs, timing, counts, ECU metadata |
+| `safety_config.h.j2` | `safety_config.h` | ASIL-B `_Static_assert` guards, DID counts |
+| `test_did_XXXX.py.j2` | `test_did_XXXX.py` | Per-DID pytest (one file per DID) |
+| `test_routine_XXXX.py.j2` | `test_routine_XXXX.py` | Per-routine pytest (one file per routine) |
+| `test_services.py.j2` | `test_services.py` | Session, security, DTC service tests |
+| `test_firmware_services.py.j2` | `test_firmware_services.py` | Firmware harness pytest |
+| `conftest.py.j2` | `conftest.py` | Simulator transport fixture |
+| `conftest_firmware.py.j2` | `conftest_firmware.py` | Firmware harness transport fixture |
+
+---
+
+## 7. Generated C Files
+
+### `generated/did_handlers.c/.h`
+
+One read/write stub per DID. Each stub is marked with a `TODO [APPLICATION]` comment instructing the integrator to replace the stub body with real sensor reads, CAN signal decoding, or NVM accesses.
+
+```c
+/* GENERATED — do not edit manually. Regenerate: codegen.py --config ... */
+
+uds_status_t did_vehicleidentificationnumber_read(uint8_t *buf, uint16_t len)
+{
+    /* TODO [APPLICATION]: Replace with real VIN read from NVM */
+    (void)memset(buf, 0x20U, (size_t)len);
+    return UDS_STATUS_OK;
+}
+```
+
+### `generated/did_safety_wrappers.c/.h`
+
+One wrapper function per DID per access direction. Implements the full 5-step validation chain. The wrapper is the only entry point through which a DID handler may be invoked — no service handler calls a DID callback directly.
+
+### `generated/routine_handlers.c/.h`
+
+One start/stop/results stub per routine. Same `TODO [APPLICATION]` pattern as DID handlers.
+
+### `generated/uds_init.c`
+
+The complete stack initialisation sequence. The function signature and ISO-TP wiring are conditional on the transport selected in the YAML (`ecu.transport`).
+
+**CAN/ISO-TP build (default — `transport: can` or no `ecu:` block):**
+
+```c
+uds_status_t uds_generated_init(
+    can_transport_t *can,
+    uint32_t         rx_can_id,
+    uint32_t         tx_can_id)
+```
+
+Initialisation sequence:
+1. `uds_safety_init()` — ASIL-B check engine (REQ-SAFE-005)
+2. `uds_safety_self_test()` — pre-start self-test (ISO 26262-6 §9.4.3)
+3. `did_database_init()` — DID static table
+4. `dtc_database_init()` — DTC static table
+5. `dtc_mirror_init()` + `dtc_mirror_load()` — NVM persistence (REQ-DTC-NVM-01)
+6. `routine_database_init()` — routine static table
+7. `did_handlers_register_all()` — link handler stubs into DID table
+8. Per-DTC `dtc_database_register()` loop
+9. Per-routine `routine_database_register()` loop
+10. **Step 5.7 — SafeBoot (conditional):** `zephyr_flash_ops_init()` generated only when `safeboot.enabled: true`
+11. `uds_session_init()` — session FSM
+12. `uds_security_init()` — AES-128-CMAC + TRNG production callbacks
+13. **Step 7.1 — Production key + TRNG gate** (SEC-KEY-GATE-01 / SEC-TRNG-GATE-01)
+14. `uds_server_init()` — UDS service dispatcher
+15. `isotp_init()` — ISO-TP channel bound to the CAN transport
+
+**DoIP-only build (`transport: doip`, compiled with `-DEDS_DOIP_ONLY_BUILD`):**
+
+```c
+uds_status_t uds_generated_init(
+    void    *can,      /* unused — pass NULL for DoIP-only */
+    uint32_t rx_can_id,
+    uint32_t tx_can_id)
+```
+
+Steps 1–13 are identical. Step 14 (`isotp_init`) is compiled out. The DoIP server is started separately via `eds_doip_platform_start()` in `main.c` after `uds_generated_init()` returns.
+
+**`EDS_DOIP_ONLY_BUILD` compile guards** are present in all generated `uds_init.c/.h` files regardless of the `ecu.transport` field. The guards are static `#ifndef` preprocessor directives — `EDS_DOIP_ONLY_BUILD` being undefined (CAN builds) means the CAN path compiles unchanged. This is fully backward-compatible: existing CAN-only configs need no YAML change and produce identical generated output except for the addition of the guards (which are transparent when the macro is not defined).
+
+The SafeBoot conditional in `uds_init.c.j2`:
+
+```jinja
+{% if safeboot_enabled %}
+#include "zephyr_flash_ops.h"
+{% endif %}
+
+...
+
+{% if safeboot_enabled %}
+    status = zephyr_flash_ops_init();
+    if (status != UDS_STATUS_OK) {
+        return status;
+    }
+{% endif %}
+```
+
+### `generated/generated_config.h`
+
+Compile-time constants derived from YAML:
+
+```c
+#define GEN_ECU_NAME               "BasicECU"
+#define GEN_CAN_RX_ID              (2015U)    /* 0x7DF */
+#define GEN_CAN_TX_ID              (2024U)    /* 0x7E8 */
+#define GEN_P2_SERVER_MAX_MS       (25U)
+#define GEN_S3_SERVER_TIMEOUT_MS   (5000U)
+#define GEN_DID_COUNT              (5U)
+#define GEN_DTC_COUNT              (2U)
+```
+
+### `generated/safety_config.h`
+
+Compile-time ASIL-B assertions. Prevents accidental disabling of safety checks:
+
+```c
+#define GEN_SAFETY_DID_COUNT       (5U)
+#define UDS_STACK_VERSION          "1.0.0"
+
+_Static_assert(GEN_SAFETY_DID_COUNT == GEN_DID_COUNT,
+               "Safety wrapper count must equal DID count");
+_Static_assert(UDS_SAFETY_ENABLE_SESSION_CHECK == 1,
+               "REQ-SAFE-002: session check must remain enabled");
+```
+
+---
+
+## 8. Generated Test Files
+
+When `--test-gen` is active, codegen produces a complete pytest suite in `generated/tests/`:
+
+| File | Tests generated |
+|---|---|
+| `test_did_XXXX.py` | Read happy path, write happy path (if writable), session gate NRC, security gate NRC (if applicable), length error NRC |
+| `test_routine_XXXX.py` | startRoutine happy path, session gate, security gate (if `security_level > 0`), stopRoutine not-supported (if absent from `support`) |
+| `test_services.py` | Session switching (all transitions), TesterPresent, SecurityAccess full unlock flow, ClearDTC, ReadDTCByStatusMask, ControlDTCSetting |
+| `test_firmware_services.py` | Same as `test_services.py` but runs against the compiled C harness binary |
+| `conftest.py` | `IsoTpTransport` fixture with simulator, virtual, SocketCAN, and firmware backends |
+| `conftest_firmware.py` | `FirmwareIsoTpTransport`: launches harness binary, waits for `READY` sentinel, connects over `AF_UNIX SOCK_SEQPACKET` |
+
+Tests run in two modes controlled by the `--can-interface` pytest flag:
+
+```bash
+# Simulator mode (no hardware, fast)
+pytest . --can-interface=simulator
+
+# Firmware mode (real compiled C stack)
+pytest test_firmware_services.py --can-interface=firmware
+pytest test_routine_*.py --can-interface=firmware
+```
+
+---
+
+## 9. Generated GUI Catalog
+
+When `--gui-types` is active, codegen writes `gui/src/generated/catalog.ts`:
+
+```typescript
+// GENERATED — DO NOT EDIT MANUALLY
+// Source: diagnostics_config.yaml (ECU: BasicECU, version: 1.1.0)
+// Tool:   tools/codegen.py --gui-types
+
+import type { DidInfo, RoutineInfo } from '../types';
+
+export const DID_CATALOG: DidInfo[] = [
+  { hex: '0xF190', name: "Vehicle Identification Number", length: 17, type: 'ascii' },
+  { hex: '0x0C00', name: "Engine Speed", length: 2, type: 'numeric' },
+  // ...
+];
+
+export const ROUTINE_CATALOG: RoutineInfo[] = [
+  { id: '0xFF00', name: "ECU_SelfTest", description: "...",
+    minSession: 'extended', securityLevel: 0, support: ['start', 'results'] },
+  // ...
+];
+```
+
+`RoutinesPanel.tsx` and `DidsPanel.tsx` import directly from this generated file, so the dashboard always reflects the current YAML configuration without manual synchronisation.
+
+---
+
+## 10. CLI Reference
+
+```bash
+python3 tools/codegen.py \
+  --config  <yaml>         Path to diagnostics_config.yaml (required)
+  --out     <dir>          Output directory for C files (default: generated/)
+  --safety-wrappers        Generate ASIL-B did_safety_wrappers.c/.h
+  --asil-level  B          ASIL level (default: B); enables stricter constraints
+  --test-gen               Generate pytest suite in <out>/tests/
+  --gui-types              Generate gui/src/generated/catalog.ts
+  --gui-out     <dir>      Override GUI output directory
+  --sovd                   Generate OpenSOVD 1.0 CDA JSON (sovd_cda.json)
+  --no-manifest            Skip manifest.json (use in CI)
+  --dry-run                Validate config only; write no files
+  --template-dir <dir>     Override tools/templates/ location
+```
+
+Example — DoIP ECU with safety wrappers and SOVD CDA:
+
+```bash
+python3 tools/codegen.py \
+  --config  examples/basic_ecu_doip/diagnostics_config.yaml \
+  --out     examples/basic_ecu_doip/generated/ \
+  --safety-wrappers \
+  --asil-level B \
+  --sovd \
+  --no-manifest
+# Produces generated/sovd_cda.json alongside the standard C files.
+```
+
+Example — BMS ECU with full test generation:
+
+```bash
+python3 tools/codegen.py \
+  --config  examples/bms_ecu/diagnostics_config.yaml \
+  --out     examples/bms_ecu/generated/ \
+  --safety-wrappers \
+  --asil-level B \
+  --test-gen \
+  --gui-types \
+  --gui-out gui/src/generated/ \
+  --no-manifest
+```
+
+---
+
+## 11. Build System Integration
+
+Generated files are included in the Zephyr CMake build via `target_sources()`:
+
+```cmake
+target_sources(app PRIVATE
+    ${DIAG_GENERATED_DIR}/did_handlers.c
+    ${DIAG_GENERATED_DIR}/did_safety_wrappers.c
+    ${DIAG_GENERATED_DIR}/routine_handlers.c
+    ${DIAG_GENERATED_DIR}/uds_init.c
+)
+```
+
+The root `CMakeLists.txt` defines a `run_codegen` custom target that re-runs `codegen.py` when any `.j2` template or the YAML changes (via `CODEGEN_SENTINEL` dependency tracking). To skip codegen during iterative builds:
+
+```bash
+west build -b native_sim examples/basic_ecu -- -DDIAG_SKIP_CODEGEN=ON
+```
+
+`-DDIAG_SKIP_CODEGEN=ON` is also used in public CI where the Jinja2 templates are not
+available (they reside in the private EDS-toolchain repo). Pre-generated files committed
+to the repository serve as the build input.
+
+---
+
+## 12. Validation and Error Handling
+
+The generator validates the YAML configuration before writing any file. The following conditions are fatal errors that abort generation:
+
+| Check | Error example |
+|---|---|
+| Duplicate DID ID | `VALIDATION ERROR: dids[2]: duplicate id 0xF190` |
+| Invalid DID ID format | `dids[0]: id must be a hex value in [0x0000, 0xFFFF]` |
+| Invalid DTC code format | `dtcs[1]: code must be a 6-digit hex value` |
+| ASIL-B: write without security | `dids[3]: write DIDs require write_security_level > 0 (ASIL-B)` |
+| ASIL-B: data length exceeded | `dids[4]: data_length 128 exceeds ASIL-B maximum of 64` |
+| Missing required field | `dids[0]: required field 'name' is missing` |
+| Invalid session name | `dids[1]: min_session 'factory' is not a valid session` |
+| Routine missing 'start' | `routines[0]: 'start' must always be in support list` |
+| Invalid transport value | `ecu.transport 'serial' is not valid — use 'can', 'doip', or 'both'` |
+
+Warnings (non-fatal) are printed for advisory issues such as missing CAN configuration (defaults applied) or no routines configured.
+
+---
+
+## 13. Regeneration Workflow
+
+Generated files must not be manually edited. Any manual change will be overwritten the next time codegen runs.
+
+```
+1. Edit diagnostics_config.yaml
+         │
+         ▼
+2. python3 tools/codegen.py --config ... --out generated/ \
+          --safety-wrappers --asil-level B --test-gen --gui-types
+         │
+         ▼
+3. Review generated diff (git diff generated/)
+         │
+         ▼
+4. Update DID/routine callback stubs in generated/did_handlers.c
+   (only the TODO [APPLICATION] bodies — the rest is generated)
+         │
+         ▼
+5. Rebuild firmware: west build -b native_sim examples/basic_ecu
+```
+
+---
+
+---
+
+## 13b. SOVD CDA Output (--sovd)
+
+When `--sovd` is passed, codegen writes `<out>/sovd_cda.json` — a valid
+OpenSOVD 1.0 Capability Description and Advertisement document describing
+the ECU's complete diagnostic profile. This file can be consumed by Eclipse
+SDV tooling, OEM SOVD clients, or any tool that understands the OpenSOVD
+1.0 schema.
+
+### Structure
+
+```json
+{
+  "sovdVersion": "1.0.0",
+  "generatedBy":  "Xaloqi EDS codegen v1.6.0",
+  "generatedAt":  "<ISO 8601 UTC>",
+  "ecuIdentification": {
+    "name":    "<ecu_name>",
+    "version": "<version>",
+    "logicalAddress": "0xE400",   // DoIP only
+    "sourceAddress":  "0x0E00"    // DoIP only
+  },
+  "transportInfo": {
+    "protocol": "DoIP",           // or "ISO-TP" for CAN
+    "port": 13400                 // DoIP only
+  },
+  "dataIdentifiers": [ ... ],
+  "dtcs":            [ ... ],
+  "routines":        [ ... ],
+  "diagnosticServices": [ ... ]   // static list of all 14 EDS services
+}
+```
+
+### Key design choices
+
+- `ecuIdentification.logicalAddress`, `ecuIdentification.sourceAddress`, and
+  `transportInfo.port` are **only emitted** when `ecu.transport` is `doip` or `both`.
+  CAN ECUs produce a clean CDA without these fields.
+- Session names use semantic strings (`"default"`, `"extended"`, `"programming"`) —
+  not the internal C constants (`UDS_SESSION_DEFAULT`) — so the JSON is directly
+  readable without knowledge of the EDS internals.
+- `writeSecurityLevel` is `null` for read-only DIDs (where `"write"` is absent from
+  the `access` list).
+- `diagnosticServices` is a static list of all 14 UDS services EDS implements; it
+  does not vary per ECU and is identical in every generated CDA.
+- Implementation is pure Python in `build_sovd_cda()` — `json.dumps(indent=2)` is
+  used directly rather than a Jinja2 template, which avoids JSON-escaping issues and
+  produces valid JSON by construction.
+
+### CI
+
+The `sovd-codegen` CI job validates the output for both `basic_ecu` (CAN) and
+`basic_ecu_doip` (DoIP) on every push, without requiring EDS-toolchain templates.
+It imports `build_sovd_cda` and `load_config` directly from `tools/codegen.py`.
+
+## 14. Generated Code Constraints
+
+All generated C modules adhere to the following rules, enforced by the templates:
+
+| Constraint | Rationale |
+|---|---|
+| No dynamic allocation | ASIL-B / MISRA C:2012 Rule 21.3 |
+| No recursion | Deterministic stack depth |
+| Static tables only | Predictable memory layout |
+| All functions return `uds_status_t` | Explicit error propagation |
+| No blocking operations | Real-time compatibility |
+| `GENERATED — DO NOT EDIT` header in every file | Prevents manual drift |
+| Traceability tags (`REQ-SAFE-*`, `REQ-DL-*`) in comments | ISO 26262 traceability |
+| `#ifndef EDS_DOIP_ONLY_BUILD` guards in `uds_init.c/.h` | Transparent on CAN builds; active on DoIP-only builds (v1.6.0) |
