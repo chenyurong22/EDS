@@ -1,0 +1,139 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.4",
+  "serialNumber": "urn:uuid:7b3c9a5d-1f2e-4c8b-a6d0-8e4f2b1c5a3d",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-06-21T00:00:00Z",
+    "tools": [
+      {
+        "vendor": "Xaloqi",
+        "name": "manual-sbom",
+        "version": "1.0"
+      }
+    ],
+    "component": {
+      "type": "firmware",
+      "bom-ref": "xaloqi-eds@1.7.4",
+      "name": "Xaloqi EDS",
+      "version": "1.7.4",
+      "description": "Production-grade UDS/ISO-TP/DoIP diagnostics stack for automotive ECUs (ASIL-B candidate, ISO 14229 / ISO 15765-2 / ISO 13400-2)",
+      "licenses": [
+        {
+          "license": {
+            "id": "GPL-2.0-only",
+            "text": {
+              "contentType": "text/plain",
+              "url": "https://github.com/Xaloqi/EDS/blob/main/LICENSE"
+            }
+          }
+        }
+      ],
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://xaloqi.com"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/Xaloqi/EDS"
+        },
+        {
+          "type": "issue-tracker",
+          "url": "https://github.com/Xaloqi/EDS/issues"
+        }
+      ]
+    }
+  },
+  "components": [
+    {
+      "type": "framework",
+      "bom-ref": "zephyr@3.7.0",
+      "name": "zephyr",
+      "version": "3.7.0",
+      "description": "Primary RTOS target. Revision v3.7.0 is pinned in west.yml. Provides RTOS services, CAN driver, NVS storage, networking stack, and DTS-based board abstraction used by the Zephyr platform port.",
+      "licenses": [
+        {
+          "license": {
+            "id": "Apache-2.0"
+          }
+        }
+      ],
+      "purl": "pkg:github/zephyrproject-rtos/zephyr@v3.7.0",
+      "scope": "required",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://zephyrproject.org"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/zephyrproject-rtos/zephyr"
+        }
+      ]
+    },
+    {
+      "type": "framework",
+      "bom-ref": "freertos-kernel@unresolved",
+      "name": "FreeRTOS-Kernel",
+      "version": "unresolved",
+      "description": "Optional RTOS for EDS_PLATFORM=freertos builds. Version is customer-provided at integration time via the FREERTOS_DIR cmake variable; the EDS repository does not pin a specific FreeRTOS-Kernel version. Minimum tested: v10.5.0.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "purl": "pkg:github/FreeRTOS/FreeRTOS-Kernel",
+      "scope": "optional",
+      "externalReferences": [
+        {
+          "type": "vcs",
+          "url": "https://github.com/FreeRTOS/FreeRTOS-Kernel"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "lwip@2.2.0",
+      "name": "lwip",
+      "version": "2.2.0",
+      "description": "TCP/IP stack used by the DoIP (ISO 13400-2) transport layer. On Zephyr: bundled as a Zephyr module (v2.2.0 in Zephyr 3.7.0, Apache-2.0 relicensed). On FreeRTOS: customer-provided. EDS calls only the platform abstraction layer (eds_doip_platform_ops_t) — lwip_* functions are never called directly from doip_server.c.",
+      "licenses": [
+        {
+          "license": {
+            "id": "BSD-3-Clause"
+          }
+        }
+      ],
+      "purl": "pkg:github/lwip-tcpip/lwip@STABLE-2_2_0_RELEASE",
+      "scope": "optional",
+      "externalReferences": [
+        {
+          "type": "website",
+          "url": "https://savannah.nongnu.org/projects/lwip/"
+        },
+        {
+          "type": "vcs",
+          "url": "https://github.com/lwip-tcpip/lwip"
+        }
+      ]
+    },
+    {
+      "type": "library",
+      "bom-ref": "unity@custom",
+      "name": "unity",
+      "version": "custom",
+      "description": "Lightweight C test assertion framework. In-house implementation in project/unity/unity.c — not the ThrowTheSwitch Unity library. Used only in host-side unit tests (build_tests.sh); never compiled into firmware or delivery ZIPs. Source: project/unity/unity.h, project/unity/unity.c.",
+      "licenses": [
+        {
+          "license": {
+            "id": "MIT"
+          }
+        }
+      ],
+      "scope": "excluded"
+    }
+  ]
+}
