@@ -290,15 +290,31 @@ expect fixed-length frames. See [docs/ISOTP_PADDING.md](ISOTP_PADDING.md).
 
 Added in v1.6.0. Implements the ECU (entity) side of the DoIP diagnostics protocol over TCP.
 
-**Supported in v1.6.0:**
-- TCP connection accept (up to `DOIP_MAX_CONNECTIONS = 4`)
-- Routing Activation Request/Response (Default activation type 0x00)
-- DiagnosticMessage (0x8001): receive → `uds_server_process_request()` → respond
-- DiagnosticMessage Positive Ack (0x8002) and Negative Ack (0x8003)
-- Alive Check Request/Response (0x0007/0x0008)
-- Generic header validation (version 0x02, inverse byte)
+#### DoIP Feature Matrix (v1.7.x, ISO 13400-2:2019)
 
-**Not in v1.6.0:** UDP Vehicle Identification, Entity Status, TLS, IPv6, multiple activation types.
+| Feature | Payload type | Status | Notes |
+|---|---|---|---|
+| TCP server on port 13400 | — | ✅ Implemented | `eds_doip_server_run()`, blocking loop |
+| DoIP header version check | — | ✅ Implemented | Version 0x02, inverse byte 0xFD validated on every frame |
+| Routing Activation Request | 0x0005 | ✅ Implemented | Activation type 0x00 (Default) only |
+| Routing Activation Response | 0x0006 | ✅ Implemented | Response codes 0x00 (denied), 0x10 (OK), 0x11 (already active) |
+| Alive Check Request | 0x0007 | ✅ Implemented | Handled without routing activation requirement |
+| Alive Check Response | 0x0008 | ✅ Implemented | Empty payload per ISO 13400-2 §9.2.7 |
+| Diagnostic Message | 0x8001 | ✅ Implemented | Source/target address validation → `uds_server_process_request()` |
+| Diagnostic Message Positive Ack | 0x8002 | ✅ Implemented | Sent before UDS dispatch per ISO 13400-2 §9.5 |
+| Diagnostic Message Negative Ack | 0x8003 | ✅ Implemented | NACK codes: 0x03 (invalid src), 0x04 (unknown tgt), 0x05 (too large), 0x07 (not routed) |
+| Single active TCP connection | — | ✅ Implemented | Sequential accept; routing state reset on new connection |
+| UDP Vehicle Identification Request | 0x0001 | ❌ Not implemented | Out of scope for v1.7.x |
+| UDP Vehicle Identification w/ EID | 0x0002 | ❌ Not implemented | Out of scope for v1.7.x |
+| Vehicle Announcement | 0x0004 | ❌ Not implemented | Out of scope for v1.7.x |
+| Entity Status Request/Response | 0x4001/0x4002 | ❌ Not implemented | Out of scope for v1.7.x |
+| Activation type 0x01 (OEM-specific) | 0x0005 | ❌ Not implemented | Only Default (0x00) supported |
+| Multiple simultaneous TCP clients | — | ❌ Not implemented | One client per server instance; clients queue sequentially |
+| TLS transport | — | ❌ Not implemented | Plain TCP only |
+| IPv6 | — | ❌ Not implemented | IPv4 only |
+
+**Source references:** `transport/doip/doip_server.h`, `transport/doip/doip_server.c` — `doip_handle_frame()` switch statement.  
+**Standard:** ISO 13400-2:2019 §9 (payload types), §9.3 (routing activation), §9.5 (diagnostic message).
 
 **Frame format symmetry:** byte-for-byte compatible with xaloqi-tester `DoipBus`
 (TestLab v1.1.0). The same `source_address=0x0E00 / target_address=0xE400 / port=13400`

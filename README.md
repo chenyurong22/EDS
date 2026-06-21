@@ -6,6 +6,8 @@
 [![License: GPL v2](https://img.shields.io/badge/License-GPL%20v2-blue.svg)](LICENSE)
 [![Zephyr](https://img.shields.io/badge/Zephyr-v3.7%2B-brightgreen)](https://zephyrproject.org)
 
+Software Bill of Materials: [sbom.json](sbom.json) (CycloneDX 1.4)
+
 **Production-grade UDS diagnostics for Zephyr RTOS and FreeRTOS — configured in YAML, generated in seconds.**
 
 Describe your DIDs and DTCs once. Get ISO 14229-compliant C code, ASIL-B safety wrappers, a full pytest suite, and CANoe CAPL scripts — all from a single `diagnostics_config.yaml`. No boilerplate. No hand-rolled session logic. Runs on `native_sim` in CI and on real CAN hardware the same day.

@@ -137,18 +137,83 @@ west build -b native_sim examples/basic_ecu \
   -- -DDTC_OVERLAY_FILE=boards/native_sim.overlay
 ```
 
-CI runs all 12 jobs automatically on pull requests. A PR will not be merged if
+CI runs all 10 jobs automatically on pull requests. A PR will not be merged if
 any CI job is red.
 
 ### 5. Pull request checklist
 
 - [ ] Issue number referenced in the PR description
 - [ ] CLA signed (if touching `core/`, `transport/`, `config/`, or `platform/`)
+- [ ] DCO sign-off on every commit (`git commit -s`) — see [Developer Certificate of Origin](https://developercertificate.org/)
 - [ ] SPDX header on every new file
 - [ ] Unit test added or updated for the changed module
 - [ ] `generated/` files regenerated and committed if YAML or templates changed
 - [ ] All 37 unit tests pass locally (`bash build_tests.sh`)
 - [ ] PR title follows format: `[fix|feat|docs|test|chore]: short description`
+
+---
+
+## AI-assisted development
+
+Xaloqi EDS uses AI-assisted development tooling (Claude Code / Anthropic Claude) to
+accelerate code generation, test generation, and code review. This section documents
+how that tooling is used, what controls are applied, and where responsibility sits — in
+response to procurement and safety audit questions about AI-generated content in
+safety-relevant code.
+
+### What AI tooling is used for
+
+- First-draft generation of boilerplate C code, header files, and test stubs
+- Review acceleration: surfacing potential MISRA violations, null-dereference paths,
+  and missing error returns before static analysis runs
+- Documentation drafting and changelog generation
+- Codegen template authoring (the `tools/templates/` Jinja2 templates)
+
+### What it is not used for
+
+- Autonomous merge decisions — no AI output is merged without human sign-off
+- Bypassing CI — all commits, regardless of origin, must pass all 10 CI jobs
+- Architecture decisions — module boundaries, safety architecture, and API contracts
+  are defined by the project maintainer
+
+### Human review and validation requirements
+
+Every commit that touches the EDS codebase, regardless of how it was generated, must satisfy:
+
+1. **CI gate:** All 10 CI jobs green — unit tests, integration tests, static analysis,
+   Zephyr build, FreeRTOS build, DoIP integration, harness tests, robustness tests.
+2. **Human sign-off:** The committing engineer reads, understands, and takes
+   responsibility for every line before it is staged. AI-generated output is a
+   starting point, not a finished deliverable.
+3. **MISRA scan:** The `static-analysis` CI job runs `misra_analysis.py` on every PR.
+   Zero new violations are permitted.
+
+### Safety-relevant changes — heightened review
+
+Changes to any of the following files or modules require explicit human sign-off in the
+PR description (`Reviewed-by: <name>`) in addition to CI passage:
+
+- `core/uds_safety.c` — ASIL-B 5-step safety check engine
+- `core/uds_session.c` — UDS session FSM (ISO 14229-1 §7.4)
+- `core/uds_security.c` — SecurityAccess seed/key validation (ISO 14229-1 §10.4)
+- `core/uds_services/service_0x27.c` — SecurityAccess service handler
+- `core/uds_services/service_0x19.c` — ReadDTCInformation handler
+- `transport/isotp.c` — ISO-TP framing and flow control (ISO 15765-2)
+- `transport/doip/doip_server.c` — DoIP server (ISO 13400-2)
+- Any file under `config/` that defines DTC status persistence
+
+AI-generated output is **never merged directly** to `main` for these files without
+a deterministic validation step: the static analysis job, the full unit test suite,
+and explicit human code review.
+
+### Maintainer responsibility
+
+Raul Latorre (Xaloqi) retains full engineering and legal responsibility for all
+committed code in this repository, regardless of the method by which it was generated.
+The use of AI tooling does not transfer, reduce, or qualify that responsibility.
+AI-generated code that is merged into EDS is EDS code — it is subject to the same
+MISRA conformance requirements, safety review process, and ISO 26262 obligations as
+any other contribution.
 
 ---
 
