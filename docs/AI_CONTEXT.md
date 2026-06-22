@@ -44,7 +44,8 @@ EDS/
 │   ├── basic_ecu_freertos/           # Same YAML, FreeRTOS platform — start here (FreeRTOS)
 │   ├── sensor_ecu/                   # Sensor → DID → DTC pattern (Zephyr sensor API)
 │   ├── sensor_ecu_freertos/          # Same YAML as sensor_ecu, FreeRTOS platform
-│   ├── safeboot_ecu/                 # MCUboot DFU over UDS (safeboot.enabled: true)
+│   ├── safeboot_ecu/                 # MCUboot DFU over UDS (safeboot.platform: zephyr)
+│   ├── safeboot_freertos_ecu/        # FreeRTOS OTA DFU — STM32H743 dual-bank, no MCUboot (safeboot.platform: freertos)
 │   ├── robot_joint_controller_ecu/   # Robotics positioning example
 │   ├── bms_ecu/                      # Battery Management System (24 DIDs)
 │   ├── motor_controller_ecu/         # Motor controller (27 DIDs)
@@ -467,6 +468,42 @@ uds_status_t calibration_data_write(const uint8_t *data, uint16_t length)
 
 ---
 
+## CAN FD ISO-TP Support (v1.7.1+)
+
+Enable CAN FD frame handling with `ISOTP_ENABLE_CAN_FD=1`:
+
+```c
+isotp_cfg_t cfg = {
+    .use_fd     = true,   /* enable CAN FD frame paths */
+    .rx_id      = 0x7DFU,
+    .tx_id      = 0x7E8U,
+};
+```
+
+Zephyr: `CONFIG_CAN_FD_MODE=y` + `-DISOTP_ENABLE_CAN_FD=1`.
+FreeRTOS / bare-metal: `-DISOTP_ENABLE_CAN_FD=1`.
+
+When enabled: SF escape sequence carries up to 62-byte payloads; FF escape sequence
+encodes 32-bit FF_DL for PDU > 4095 bytes. Default is 0 (classic CAN, unchanged).
+
+---
+
+## Strict Programming Session Gate (v1.7.2+)
+
+Some OEM toolchains (BMW, VAG) require Extended session before Programming session.
+Enable after `uds_generated_init()`:
+
+```c
+uds_session_set_strict_programming(&session_ctx, true);
+/* Default → Programming: NRC 0x25 (request sequence error) */
+/* Default → Extended → Programming: OK */
+```
+
+Default is permissive (ISO 14229-1 §7.4.2.3 does not normatively require Extended first).
+Zero behaviour change for existing integrations.
+
+---
+
 ## DTC Reporting from Application Code
 
 ```c
@@ -513,11 +550,14 @@ demonstrate DTC behaviour without hardware.
 
 ---
 
-## SafeBoot — MCUboot DFU over UDS
+## SafeBoot — OTA DFU over UDS
 
-Setting `safeboot.enabled: true` causes codegen to generate `zephyr_flash_ops_init()`
-automatically in `uds_init.c`, wiring the MCUboot secondary-slot flash driver into the
-UDS transfer services. No manual flash ops registration required.
+Setting `safeboot.enabled: true` causes codegen to generate a platform flash ops init
+call automatically in `uds_init.c`, wiring the flash driver into the UDS transfer
+services. No manual flash ops registration required.
+
+- `safeboot.platform: zephyr` (default) → generates `zephyr_flash_ops_init()` — MCUboot secondary-slot on Zephyr
+- `safeboot.platform: freertos` → generates `freertos_flash_ops_init()` — STM32H743 dual-bank, no MCUboot
 
 **DFU sequence (7 steps):**
 ```
@@ -542,7 +582,8 @@ Safety enforcement is automatic: programming session + security level 1 required
 CRC-32 verified before image acceptance (REQ-FLASH-003), address validated against
 MCUboot secondary slot bounds (REQ-FLASH-002). Primary slot is never written directly.
 
-See `examples/safeboot_ecu/` for the full reference including `dfu_flash.py`.
+See `examples/safeboot_ecu/` for the Zephyr/MCUboot reference including `dfu_flash.py`.
+See `examples/safeboot_freertos_ecu/` for the FreeRTOS/STM32H743 reference.
 
 ---
 
@@ -678,7 +719,8 @@ safeboot:
   max_block_length: 256
 ```
 
-After codegen, `uds_init.c` automatically includes and calls `zephyr_flash_ops_init()`.
+After codegen, `uds_init.c` automatically includes and calls the platform flash ops init
+(`zephyr_flash_ops_init()` for Zephyr, `freertos_flash_ops_init()` for FreeRTOS).
 Services 0x34/0x36/0x37 become functional in the programming session with security level 1.
 
 ---
@@ -849,8 +891,9 @@ Default tester address is `0x0E00` (xaloqi-tester DoipBus default). Your
 `uds_generated_init(NULL, 0, 0)` must have completed before the first connection.
 
 ### SafeBoot: 0x34 returns NRC 0x22
-`safeboot.enabled: true` not in YAML, or codegen not re-run. Verify
-`zephyr_flash_ops_init()` is present in `generated/uds_init.c`.
+`safeboot.enabled: true` not in YAML, or codegen not re-run. Verify the platform
+flash ops init is present in `generated/uds_init.c`: `zephyr_flash_ops_init()` for
+Zephyr builds or `freertos_flash_ops_init()` for FreeRTOS builds.
 
 ### Build fails: "CONFIG_CAN_LOOPBACK not set" (Zephyr)
 Add to board `.conf`: `CONFIG_CAN_LOOPBACK=y`, `CONFIG_CAN=y`, `CONFIG_ISOTP=y`.

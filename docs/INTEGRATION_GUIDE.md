@@ -35,7 +35,7 @@ The following table covers every service defined in ISO 14229-1:2020. "Implement
 
 | SID | Service Name | Status | Sub-functions / Notes |
 |-----|---|---|---|
-| 0x10 | DiagnosticSessionControl | **Implemented** | Sub-fn 0x01 Default, 0x02 Programming, 0x03 Extended, 0x04 SafetySystem. suppressPosRspMsgIndicationBit (bit 7) honoured. P2/P2\* timing encoded per ISO §7.2 (P2\* field = ms/10). |
+| 0x10 | DiagnosticSessionControl | **Implemented** | Sub-fn 0x01 Default, 0x02 Programming, 0x03 Extended, 0x04 SafetySystem. suppressPosRspMsgIndicationBit (bit 7) honoured. P2/P2\* timing encoded per ISO §7.2 (P2\* field = ms/10). Optional strict gate (v1.7.2): `uds_session_set_strict_programming(ctx, true)` rejects Default→Programming directly (OEM toolchain compliance). |
 | 0x11 | ECUReset | **Implemented** | Sub-fn 0x01 hardReset, 0x02 keyOffOnReset, 0x03 softReset. All three map to `sys_reboot()` on Zephyr. suppressPosRspMsgIndicationBit honoured. |
 | 0x14 | ClearDiagnosticInformation | **Implemented** | groupOfDTC 0xFFFFFF (all groups) and any 3-byte DTC group code. NVM-backed status cleared via `dtc_mirror_clear_all()`. |
 | 0x19 | ReadDTCInformation | **Implemented** | Sub-fn 0x01 reportNumberOfDTCByStatusMask, 0x02 reportDTCByStatusMask, 0x03 reportDTCSnapshotIdentification (returns empty identifier list — no freeze-frame data stored), 0x04 reportDTCSnapshotRecordByDTCNumber (returns empty record — no snapshot data stored), 0x06 reportDTCExtDataRecordByDTCNumber (returns empty record), 0x0A reportSupportedDTCs. All 8 DTC status bits supported (availability mask 0xFF). ISO 14229-1 DTC format (format ID 0x01). |
@@ -73,7 +73,7 @@ The following table covers every service defined in ISO 14229-1:2020. "Implement
 | Physical addressing | **Partial** | The Zephyr CAN RX filter in `zephyr_can.c` installs one filter for 0x7DF. Adding a second filter for a physical address (e.g. 0x7E0) requires one additional `can_add_rx_filter_msgq()` call — see `platform/zephyr/zephyr_can.c` line 271 for the comment. |
 | Extended addressing (29-bit) | **Out of scope** | `is_extended_id` field exists in `uds_can_frame_t` but 29-bit addressing is not tested and not officially supported. |
 | Mixed addressing | **Out of scope** | — |
-| CAN FD (ISO 15765-2 §9.8) | **Out of scope** | `is_fd` field exists in `uds_can_frame_t`. The transport layer does not use FD frames or the FD escape sequence for PDU length > 4095 bytes. |
+| CAN FD (ISO 15765-2 §9.8) | **Implemented** (v1.7.1+) | Enable with `ISOTP_ENABLE_CAN_FD=1` (`CONFIG_CAN_FD_MODE=y` on Zephyr). Adds SF escape sequence (up to 62-byte SF), FF escape sequence (32-bit FF_DL for PDU > 4095 bytes). Set `isotp_cfg_t.use_fd = true` to activate. Platform HAL wired in `zephyr_can.c` and `freertos_can.c` since v1.7.2. |
 | Max PDU length | **4095 bytes** | Defined by `UDS_MAX_PAYLOAD_LEN` in `core/uds_types.h`. Reducible at compile time to save RAM (see §2). |
 
 ---
@@ -98,9 +98,15 @@ The following table covers every service defined in ISO 14229-1:2020. "Implement
 
 - **Functional addressing only by default**: 0x7DF RX filter installed. Physical addressing requires one additional `can_add_rx_filter_msgq()` call — not a code change, only a configuration extension.
 - **Single-ECU only**: no gateway routing. Multi-ECU addressing (ISO 15765-3 normal fixed addressing to 0x7Ex/0x18DAxxxx) is not implemented.
-- **CAN FD not tested**: CAN FD hardware compilation succeeds (STM32H7/G4 FDCAN driver) but the ISO-TP layer does not use FD frames. Classical CAN (max 8 bytes/frame) is the tested transport.
+- **CAN FD available but opt-in**: `ISOTP_ENABLE_CAN_FD=1` enables CAN FD ISO-TP (SF escape up to 62 bytes, FF escape for PDU > 4095 bytes). Disabled by default — classic CAN remains the tested default transport. See §1.2 above for details.
 - **DoIP available** (ISO 13400-2): see Section 5 (DoIP Integration) below. CAN and DoIP
   use the same UDS core — `ecu.transport: doip` in YAML selects the DoIP path.
+- **Strict programming session gate (optional, v1.7.2)**: some OEM toolchains (BMW, VAG) require Extended session before Programming. Enable after init:
+  ```c
+  uds_session_set_strict_programming(&session_ctx, true);
+  /* Default→Programming now returns NRC 0x25; Default→Extended→Programming OK */
+  ```
+  Default is permissive (ISO 14229-1 §7.4.2.3 does not normatively require Extended first).
 - **Security levels fixed at 2**: AES-CMAC keys for levels 1 and 2. More levels require changing `ALGO_MAX_LEVELS`.
 - **SID 0x19 — ReadDTCInformation: partial sub-function coverage.** The following sub-functions are implemented: `0x01` (reportNumberOfDTCByStatusMask), `0x02` (reportDTCByStatusMask), `0x04` (reportDTCSnapshotRecordByDTCNumber), `0x06` (reportDTCExtDataRecordByDTCNumber), `0x0A` (reportSupportedDTCs). The following sub-functions are **not implemented** and return NRC `0x12` (subFunctionNotSupported): `0x0B` (reportDTCWithPermanentStatus) and `0x19` (reportDTCExtDataRecordByRecordNumber). These are required by some OEM tool profiles (notably CANdelaStudio extended sessions). If your tester sends `0x19 0x0B` or `0x19 0x19`, the ECU will respond with NRC `0x12` — this is the correct ISO 14229-1 behaviour for unsupported sub-functions and will not cause a protocol error. Implementation of these sub-functions is planned for a future release.
 
@@ -461,7 +467,7 @@ safeboot:
   max_block_length: 256
 ```
 
-Codegen then generates `zephyr_flash_ops_init()` automatically into `uds_init.c`. Add `platform/zephyr/zephyr_flash_ops.c` to your CMakeLists sources. No other application code changes required.
+Codegen then generates the platform flash ops init automatically into `uds_init.c` (`zephyr_flash_ops_init()` for `platform: zephyr`, `freertos_flash_ops_init()` for `platform: freertos`). Add the matching source file to your CMakeLists. No other application code changes required.
 
 See the `examples/safeboot_ecu/` example and [`docs/INTEGRATION_GUIDE.md` — SafeBoot section](#safeboot) for the full DFU sequence, Python flash script, and MCUboot setup requirements.
 
@@ -741,11 +747,18 @@ A minimal `FreeRTOSConfig.h` for QEMU Cortex-M4 is provided at `examples/basic_e
 
 ---
 
-## 5. SafeBoot — MCUboot DFU over UDS {#safeboot}
+## 5. SafeBoot — OTA DFU over UDS {#safeboot}
 
-SafeBoot integrates the MCUboot secondary slot with UDS download services
+SafeBoot integrates platform flash storage with UDS download services
 (0x34 RequestDownload / 0x36 TransferData / 0x37 RequestTransferExit) via
 a single YAML flag. Codegen handles the wiring automatically.
+
+Two platform paths are available:
+
+| `safeboot.platform` | Flash driver | MCUboot | Reference example |
+|---|---|---|---|
+| `zephyr` (default) | `zephyr_flash_ops.c` — MCUboot `image_1` secondary slot | Required | `examples/safeboot_ecu/` |
+| `freertos` | `freertos_flash_ops.c` — STM32H743 Bank 2 dual-bank write | Not required | `examples/safeboot_freertos_ecu/` |
 
 ### 5.1 Enable SafeBoot
 
@@ -754,7 +767,7 @@ Add to your `diagnostics_config.yaml`:
 ```yaml
 safeboot:
   enabled: true
-  platform: zephyr          # zephyr and freertos supported in v1.4.0
+  platform: zephyr          # "zephyr" (MCUboot, default) or "freertos" (STM32H743 dual-bank, v1.8.0)
   max_block_length: 256     # bytes per TransferData block (CAN classical: 256)
 ```
 
@@ -767,26 +780,37 @@ python3 tools/codegen.py \
   --safety-wrappers --asil-level B --no-manifest
 ```
 
-Add `platform/zephyr/zephyr_flash_ops.c` to your `CMakeLists.txt` sources.
+Add the appropriate platform flash ops source to your `CMakeLists.txt`:
+- Zephyr: `platform/zephyr/zephyr_flash_ops.c`
+- FreeRTOS: `platform/freertos/freertos_flash_ops.c`
+
 That is the complete integration — no application code changes.
 
 ### 5.2 What codegen generates
 
-With `safeboot.enabled: true`, `generated/uds_init.c` includes:
+With `safeboot.enabled: true`, `generated/uds_init.c` includes the platform
+flash ops init at Step 5.7:
 
+**Zephyr (`platform: zephyr`):**
 ```c
-#include "zephyr_flash_ops.h"   /* generated — only when safeboot enabled */
+#include "zephyr_flash_ops.h"
 
 /* Inside uds_generated_init(): */
-status = zephyr_flash_ops_init();
-if (status != UDS_STATUS_OK) {
-    return status;
-}
+status = zephyr_flash_ops_init();   /* registers MCUboot image_1 slot */
+if (status != UDS_STATUS_OK) { return status; }
 ```
 
-`zephyr_flash_ops_init()` registers the MCUboot secondary-slot flash
-operations (`image_1` partition). The three download services then accept
-requests. No other changes to `main.c` or any other file.
+**FreeRTOS (`platform: freertos`):**
+```c
+#include "freertos_flash_ops.h"
+
+/* Inside uds_generated_init(): */
+status = freertos_flash_ops_init(); /* registers STM32H743 Bank 2 (0x08100000) */
+if (status != UDS_STATUS_OK) { return status; }
+```
+
+The three download services (0x34/0x36/0x37) then accept requests. No other
+changes to `main.c` or any other file.
 
 ### 5.3 DFU sequence
 
@@ -811,18 +835,24 @@ After the reset, MCUboot detects a valid image in `image_1`, copies it to
 |---|---|
 | Programming session required | ACL table enforces session 0x02 for 0x34 |
 | Security Level 1 required | ACL table enforces unlock before 0x34 |
-| Address range validated | `zephyr_flash_ops.c` bounds-checks against `image_1` partition |
+| Address range validated | Zephyr: `zephyr_flash_ops.c` bounds-checks against `image_1`. FreeRTOS: `freertos_flash_ops.c` bounds-checks against Bank 2 (0x08100000–0x081DFFFF) |
 | CRC-32 verified | `service_0x37` reads back written bytes and checks CRC before accepting |
-| Primary slot never written | `image_0` is read-only; MCUboot performs the swap |
+| Primary slot never written | Zephyr: `image_0` is read-only; MCUboot performs the swap. FreeRTOS: Bank 1 is never written; customer bootloader performs bank switch |
 
-### 5.5 Board requirements
+### 5.5 Platform requirements
 
+**Zephyr (`platform: zephyr`):**
 - `CONFIG_FLASH_MAP=y`, `CONFIG_FLASH=y` in board conf
 - `image_1` partition defined in board DTS (flash map)
 - MCUboot installed in the primary slot before application firmware
+- See `examples/safeboot_ecu/boards/nucleo_h743zi/` for a complete working board overlay
 
-See `examples/safeboot_ecu/boards/nucleo_h743zi/` for a complete working
-board overlay and conf for the STM32 Nucleo-H743ZI2.
+**FreeRTOS (`platform: freertos`, v1.8.0+):**
+- STM32H743ZI (or compatible dual-bank STM32H7) with HAL enabled (`-DSTM32H743xx`)
+- Bank 2 (0x08100000, 896 KB) used as OTA staging area — no partition table required
+- Customer bootloader responsible for bank swap at reset; EDS only writes and verifies Bank 2
+- CI/QEMU: RAM stub activates automatically when `STM32H743xx` is not defined — no STM32 HAL needed
+- See `examples/safeboot_freertos_ecu/` for a complete working example
 
 ### 5.6 Python flash script
 
@@ -1022,7 +1052,7 @@ Do not set `EDS_DOIP_ONLY_BUILD=1` in this configuration.
 |---|---|---|---|---|
 | Linux host simulation | Zephyr `native_sim` | `ZEPHYR_TOOLCHAIN_VARIANT=host` | `CONFIG_CAN_LOOPBACK` (virtual) | Full: unit tests + firmware integration tests + simulator tests |
 | ST Nucleo H743ZI | Zephyr `nucleo_h743zi` | ARM Cortex-M7 cross-compile | `st,stm32h7-fdcan` | Compile-only (no hardware in CI) |
-| QEMU `mps2-an386` (Cortex-M4) | FreeRTOS | `arm-none-eabi-gcc` cross-compile | Stub loopback | Build + binary size check (`freertos-qemu` CI job) |
+| QEMU `mps2-an386` (Cortex-M4) | FreeRTOS | `arm-none-eabi-gcc` cross-compile | Stub loopback | Build + binary size check (`freertos-qemu` CI job, `freertos-safeboot` CI job) |
 
 ### 6.2 Validated by Example (not in CI)
 
