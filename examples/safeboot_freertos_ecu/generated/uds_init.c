@@ -5,7 +5,7 @@
  *
  * ECU       : SafeBootFreeRTOSECU
  * Version   : 1.0.0
- * Generated : 2026-06-22T00:00:00Z
+ * Generated : 2026-06-23T18:48:14Z
  *
  * PURPOSE: Generated UDS stack initialisation. Wires all sub-modules together
  *          using timing constants and database entries derived from YAML.
@@ -31,6 +31,7 @@
  *            5.5 dtc_mirror_load()                — restore DTC status from NVM (REQ-DTC-NVM-01)
  *            5.6 routine_handlers_register_all()  — populate routine table
  *            5.7 (flash ops — caller registers if DFU required)
+ *            5.8 uds_comm_control_init()          — SID 0x28 + 0x85 state machine
  *            6.  uds_session_init()               — session state machine
  *            7.  uds_security_init()              — seed/key state machine
  *            7.1 Production key + TRNG guard      — SEC-KEY-GATE-01 / SEC-TRNG-GATE-01
@@ -55,6 +56,7 @@
 #include "uds_security.h"
 #include "uds_security_algo.h"
 #include "uds_safety.h"
+#include "uds_comm_control.h"
 #include "uds_types.h"
 #include "services.h"
 #include "did_handlers.h"
@@ -69,8 +71,8 @@
 #endif /* EDS_DOIP_ONLY_BUILD */
 #include "generated_config.h"
 #include "safety_config.h"
-/* SafeBoot: FreeRTOS/STM32H743 OTA DFU — safeboot.platform: freertos */
-#include "freertos_flash_ops.h"
+/* SafeBoot: MCUboot DFU — included because safeboot.enabled: true */
+#include "zephyr_flash_ops.h"
 
 #include <stddef.h>
 #include <stdbool.h>
@@ -317,35 +319,74 @@ uds_status_t uds_generated_init(
         return status;
     }
 
-    /* ── Step 5.7: Flash operations (SafeBoot FreeRTOS — STM32H743 OTA) ──────────────
+    /* ── Step 5.7: Flash operations (SafeBoot — MCUboot DFU) ──────────────
      *
-     * SafeBoot is ENABLED in diagnostics_config.yaml (safeboot.enabled: true,
-     * safeboot.platform: freertos).  freertos_flash_ops_init() registers the
-     * STM32H743ZI dual-bank HAL flash ops table before the UDS server starts.
+     * SafeBoot is ENABLED in diagnostics_config.yaml (safeboot.enabled: true).
+     * zephyr_flash_ops_init() is called here to register the MCUboot
+     * secondary-slot flash ops table before the UDS server starts.
      *
      * This enables UDS services 0x34 (RequestDownload), 0x36 (TransferData),
      * and 0x37 (RequestTransferExit) to accept firmware download requests.
      *
-     * OTA staging area: Bank 2 (0x08100000 – 0x081DFFFF).
-     * The running application in Bank 1 is never written directly.
-     * Bank swap at boot is handled by the customer's bootloader.
+     * MCUboot secondary slot: FLASH_AREA_ID(image_1) — image_0 is never
+     * written directly. MCUboot performs the swap on the next boot after
+     * the secondary slot is validated (CRC-32 checked by service_0x37).
      *
      * REQ-FLASH-001: flash ops must be registered before 0x34 is accepted.
-     * REQ-FLASH-002: address + size validated against Bank 2 bounds.
+     * REQ-FLASH-002: address + size validated against secondary slot bounds.
      * REQ-FLASH-003: CRC-32 verified after transfer exit before image accepted.
      *
      * Max block length: 256 bytes per TransferData block.
      * Reduce for slower CAN buses; increase for CAN FD or Ethernet/DoIP.
-     *
-     * CI/QEMU: when STM32H743xx is not defined, a RAM stub is used —
-     * compile succeeds and CRC verification works, but writes are not persistent.
      */
-    status = freertos_flash_ops_init();
+    status = zephyr_flash_ops_init();
     if (status != UDS_STATUS_OK) {
         /* Flash ops init failed — DFU services will be locked out.
-         * Check that freertos_flash_ops.c is compiled and (for real hardware)
-         * that STM32H743xx is defined and the STM32H7 HAL is linked. */
+         * Check that CONFIG_FLASH_MAP=y and the MCUboot secondary slot
+         * partition (image_1) exists in your board DTS. */
         return status;
+    }
+
+    /* ── Step 5.8: Communication control + DTC setting state machine ──────
+     *
+     * Initialises the module that backs SID 0x28 (CommunicationControl) and
+     * SID 0x85 (ControlDTCSetting).  Without this call s_initialized is false
+     * and both services return NRC 0x22 (conditionsNotCorrect).
+     *
+     * Platform callbacks are OPTIONAL.  Passing NULL means:
+     *   - 0x28 responses succeed and the mode is tracked in software
+     *     (s_comm_mode), but no CAN filter is adjusted by the stack itself.
+     *   - 0x85 responses succeed and the flag is tracked (s_dtc_setting),
+     *     but no hardware DTC-storage gate is applied by the stack.
+     *
+     * OEM INTEGRATION: to wire real hardware behaviour, register callbacks
+     * before (or instead of) calling uds_generated_init():
+     *
+     *   static uds_status_t my_comm_cb(uds_comm_mode_t mode, uint8_t type) {
+     *       // adjust CAN filter — e.g. Zephyr: can_add_rx_filter / can_detach
+     *       return UDS_STATUS_OK;
+     *   }
+     *   static uds_status_t my_dtc_cb(uds_dtc_setting_mode_t mode) {
+     *       // gate DTC storage in the application
+     *       return UDS_STATUS_OK;
+     *   }
+     *   static const uds_comm_control_cfg_t k_comm_cfg = {
+     *       .comm_cb = my_comm_cb, .dtc_cb = my_dtc_cb };
+     *   uds_comm_control_init(&k_comm_cfg);
+     *   uds_generated_init(...);   // do NOT call uds_generated_init if
+     *                              // you already initialised comm_control
+     *
+     * TRACEABILITY: REQ-COMM-001, REQ-DTC-SET-001
+     */
+    {
+        static const uds_comm_control_cfg_t k_comm_cfg = {
+            .comm_cb = NULL,   /* OEM: wire platform CAN-filter callback here */
+            .dtc_cb  = NULL,   /* OEM: wire DTC-enable/disable callback here  */
+        };
+        status = uds_comm_control_init(&k_comm_cfg);
+        if (status != UDS_STATUS_OK) {
+            return status;
+        }
     }
 
     /* ── Step 6: Session layer ─────────────────────────────────────────────

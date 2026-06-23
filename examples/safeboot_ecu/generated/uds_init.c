@@ -5,7 +5,7 @@
  *
  * ECU       : SafeBootECU
  * Version   : 1.0.0
- * Generated : 2026-05-20T07:21:49Z
+ * Generated : 2026-06-23T18:48:13Z
  *
  * PURPOSE: Generated UDS stack initialisation. Wires all sub-modules together
  *          using timing constants and database entries derived from YAML.
@@ -31,6 +31,7 @@
  *            5.5 dtc_mirror_load()                — restore DTC status from NVM (REQ-DTC-NVM-01)
  *            5.6 routine_handlers_register_all()  — populate routine table
  *            5.7 (flash ops — caller registers if DFU required)
+ *            5.8 uds_comm_control_init()          — SID 0x28 + 0x85 state machine
  *            6.  uds_session_init()               — session state machine
  *            7.  uds_security_init()              — seed/key state machine
  *            7.1 Production key + TRNG guard      — SEC-KEY-GATE-01 / SEC-TRNG-GATE-01
@@ -55,6 +56,7 @@
 #include "uds_security.h"
 #include "uds_security_algo.h"
 #include "uds_safety.h"
+#include "uds_comm_control.h"
 #include "uds_types.h"
 #include "services.h"
 #include "did_handlers.h"
@@ -343,6 +345,48 @@ uds_status_t uds_generated_init(
          * Check that CONFIG_FLASH_MAP=y and the MCUboot secondary slot
          * partition (image_1) exists in your board DTS. */
         return status;
+    }
+
+    /* ── Step 5.8: Communication control + DTC setting state machine ──────
+     *
+     * Initialises the module that backs SID 0x28 (CommunicationControl) and
+     * SID 0x85 (ControlDTCSetting).  Without this call s_initialized is false
+     * and both services return NRC 0x22 (conditionsNotCorrect).
+     *
+     * Platform callbacks are OPTIONAL.  Passing NULL means:
+     *   - 0x28 responses succeed and the mode is tracked in software
+     *     (s_comm_mode), but no CAN filter is adjusted by the stack itself.
+     *   - 0x85 responses succeed and the flag is tracked (s_dtc_setting),
+     *     but no hardware DTC-storage gate is applied by the stack.
+     *
+     * OEM INTEGRATION: to wire real hardware behaviour, register callbacks
+     * before (or instead of) calling uds_generated_init():
+     *
+     *   static uds_status_t my_comm_cb(uds_comm_mode_t mode, uint8_t type) {
+     *       // adjust CAN filter — e.g. Zephyr: can_add_rx_filter / can_detach
+     *       return UDS_STATUS_OK;
+     *   }
+     *   static uds_status_t my_dtc_cb(uds_dtc_setting_mode_t mode) {
+     *       // gate DTC storage in the application
+     *       return UDS_STATUS_OK;
+     *   }
+     *   static const uds_comm_control_cfg_t k_comm_cfg = {
+     *       .comm_cb = my_comm_cb, .dtc_cb = my_dtc_cb };
+     *   uds_comm_control_init(&k_comm_cfg);
+     *   uds_generated_init(...);   // do NOT call uds_generated_init if
+     *                              // you already initialised comm_control
+     *
+     * TRACEABILITY: REQ-COMM-001, REQ-DTC-SET-001
+     */
+    {
+        static const uds_comm_control_cfg_t k_comm_cfg = {
+            .comm_cb = NULL,   /* OEM: wire platform CAN-filter callback here */
+            .dtc_cb  = NULL,   /* OEM: wire DTC-enable/disable callback here  */
+        };
+        status = uds_comm_control_init(&k_comm_cfg);
+        if (status != UDS_STATUS_OK) {
+            return status;
+        }
     }
 
     /* ── Step 6: Session layer ─────────────────────────────────────────────
