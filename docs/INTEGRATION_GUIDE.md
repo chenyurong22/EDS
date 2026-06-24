@@ -1109,6 +1109,8 @@ If your board is not in the list above, three things are required:
 
 3. **Kconfig**: Enable `CONFIG_CAN=y`, `CONFIG_SYS_CLOCK_TICKS_PER_SEC=1000`, `CONFIG_NVS=y` (for DTC persistence). Add the board-specific CAN driver symbol (e.g. `CONFIG_CAN_STM32FD=y`).
 
+4. **`CONFIG_REBOOT=y`**: `platform/zephyr/zephyr_port.c` calls `sys_reboot()` for ECU reset handling. STM32 SoC defconfigs auto-select this; NXP MCX and some other families do not. If you see `undefined reference to 'sys_reboot'` at link time, add `CONFIG_REBOOT=y` to your board `.conf`.
+
 No changes to the EDS stack source files are required for new board support. The CAN abstraction layer (`platform/zephyr/zephyr_can.c`) uses only the stable Zephyr CAN API.
 
 ---
