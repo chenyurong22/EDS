@@ -68,3 +68,18 @@ EDS_C1_Licensing_Decisions.docx
 
 # Root generated/ removed — each example owns its own generated/ subfolder
 /generated/
+
+# MISRA analysis outputs — build artefacts, never commit
+misra_report.json
+misra_report.txt
+misra_violations.csv
+
+# Commercial tier — live in EDS-toolchain, not this repo
+gui/
+ide/
+tools/eds_ai.py
+tools/_eds_ai_prompts.py
+tools/mcp_server.py
+tools/jobrunner.py
+tools/testlab.py
+tools/job_library/

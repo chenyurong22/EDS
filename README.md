@@ -331,6 +331,8 @@ The runtime stack (`core/`, `transport/`, `config/`, `platform/`) is GPL v2.
 ECU examples (`examples/`) are Apache 2.0.  
 Code generation tools and Safety Manual require a commercial license.
 
+Unlike alternatives that use PolyForm Noncommercial (which prohibits production use without a paid license), the EDS runtime is GPL v2 — you can ship it in a commercial product for free.
+
 → **[Commercial licenses](https://xaloqi.com)**  
 → **[License activation & tier details](docs/COMMERCIAL_ONBOARDING.md)**
 
