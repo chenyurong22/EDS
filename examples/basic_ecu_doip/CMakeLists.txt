@@ -88,6 +88,9 @@ target_include_directories(app PRIVATE
 # ---------------------------------------------------------------------------
 # Source files
 # ---------------------------------------------------------------------------
+# UDS service source list — set EDS_SERVICE_SRCS.
+include(${DIAG_ROOT}/cmake/eds_service_sources.cmake)
+
 target_sources(app PRIVATE
 
     # ── Application entry point ──────────────────────────────────────────
@@ -105,23 +108,8 @@ target_sources(app PRIVATE
     ${DIAG_ROOT}/core/uds_security_nvm.c
     ${DIAG_ROOT}/core/uds_aes_cmac.c
 
-    # ── UDS service handlers ──────────────────────────────────────────────
-    ${DIAG_ROOT}/core/uds_services/service_registration.c
-    ${DIAG_ROOT}/core/uds_services/service_0x10.c
-    ${DIAG_ROOT}/core/uds_services/service_0x11.c
-    ${DIAG_ROOT}/core/uds_services/service_0x14.c
-    ${DIAG_ROOT}/core/uds_services/service_0x19.c
-    ${DIAG_ROOT}/core/uds_services/service_0x22.c
-    ${DIAG_ROOT}/core/uds_services/service_0x27.c
-    ${DIAG_ROOT}/core/uds_services/service_0x28.c
-    ${DIAG_ROOT}/core/uds_services/service_0x2E.c
-    ${DIAG_ROOT}/core/uds_services/service_0x31.c
-    ${DIAG_ROOT}/core/uds_services/service_0x3E.c
-    ${DIAG_ROOT}/core/uds_services/service_0x85.c
-    ${DIAG_ROOT}/core/uds_services/service_0x34.c
-    ${DIAG_ROOT}/core/uds_services/service_0x35.c
-    ${DIAG_ROOT}/core/uds_services/service_0x36.c
-    ${DIAG_ROOT}/core/uds_services/service_0x37.c
+    # UDS service handlers (all 16 SIDs + dispatch table).
+    ${EDS_SERVICE_SRCS}
     ${DIAG_ROOT}/core/uds_transfer_ctx.c
     ${DIAG_ROOT}/platform/uds_flash_ops.c
 

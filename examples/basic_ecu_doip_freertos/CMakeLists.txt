@@ -93,6 +93,9 @@ set(FREERTOS_SRCS
 # EDS sources
 # ---------------------------------------------------------------------------
 
+# UDS service source list — set EDS_SERVICE_SRCS.
+include(${DIAG_ROOT}/cmake/eds_service_sources.cmake)
+
 add_executable(eds_freertos_doip
     # Application
     src/main.c
@@ -108,22 +111,8 @@ add_executable(eds_freertos_doip
     ${DIAG_ROOT}/core/uds_session_stats.c
     ${DIAG_ROOT}/core/uds_security_nvm.c
     ${DIAG_ROOT}/core/uds_aes_cmac.c
-    ${DIAG_ROOT}/core/uds_services/service_registration.c
-    ${DIAG_ROOT}/core/uds_services/service_0x10.c
-    ${DIAG_ROOT}/core/uds_services/service_0x11.c
-    ${DIAG_ROOT}/core/uds_services/service_0x14.c
-    ${DIAG_ROOT}/core/uds_services/service_0x19.c
-    ${DIAG_ROOT}/core/uds_services/service_0x22.c
-    ${DIAG_ROOT}/core/uds_services/service_0x27.c
-    ${DIAG_ROOT}/core/uds_services/service_0x28.c
-    ${DIAG_ROOT}/core/uds_services/service_0x2E.c
-    ${DIAG_ROOT}/core/uds_services/service_0x31.c
-    ${DIAG_ROOT}/core/uds_services/service_0x3E.c
-    ${DIAG_ROOT}/core/uds_services/service_0x85.c
-    ${DIAG_ROOT}/core/uds_services/service_0x34.c
-    ${DIAG_ROOT}/core/uds_services/service_0x35.c
-    ${DIAG_ROOT}/core/uds_services/service_0x36.c
-    ${DIAG_ROOT}/core/uds_services/service_0x37.c
+    # UDS service handlers (all 16 SIDs + dispatch table).
+    ${EDS_SERVICE_SRCS}
     ${DIAG_ROOT}/core/uds_transfer_ctx.c
     ${DIAG_ROOT}/platform/uds_flash_ops.c
 
